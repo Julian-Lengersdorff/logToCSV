@@ -1,6 +1,16 @@
 // Minimal x64dbg plugin
 #include <cstring>
+#include <fstream>
+#include <string>
+#include <sstream>
+#include <iomanip>
 #include "pluginmain.h"
+
+// Global state for CSV logging
+static std::ofstream csvFile;
+static std::string csvFilePath;
+static int currentSessionId = 1;
+static bool csvFileOpen = false;
 
 // Global variables required by the plugin framework
 int pluginHandle = 0;
@@ -13,10 +23,304 @@ int hMenuGraph = 0;
 int hMenuMemmap = 0;
 int hMenuSymmod = 0;
 
+// Create CSV file in temp directory
+static bool createCSVFile()
+{
+    if (csvFileOpen)
+    {
+        _plugin_logprintf("[%s] CSV file already open\n", PLUGIN_NAME);
+        return true;
+    }
+
+    // Get temp directory
+    char tempPath[MAX_PATH];
+    DWORD result = GetTempPathA(MAX_PATH, tempPath);
+    if (result == 0)
+    {
+        _plugin_logprintf("[%s] Failed to get temp directory\n", PLUGIN_NAME);
+        return false;
+    }
+
+    // Always use the same filename: timing_13.csv
+    std::ostringstream filename;
+    filename << tempPath << "timing_13.csv";
+    csvFilePath = filename.str();
+
+    // Check if file already exists
+    bool fileExists = false;
+    std::ifstream checkFile(csvFilePath);
+    if (checkFile.good())
+    {
+        fileExists = true;
+        checkFile.close();
+    }
+
+    // Open CSV file in append mode
+    csvFile.open(csvFilePath, std::ios::out | std::ios::app);
+    if (!csvFile.is_open())
+    {
+        _plugin_logprintf("[%s] Failed to open CSV file: %s\n", PLUGIN_NAME, csvFilePath.c_str());
+        return false;
+    }
+
+    // Write CSV header only if file is new
+    if (!fileExists)
+    {
+        csvFile << "ID,timestamp,label,secret\n";
+        csvFile.flush();  // Ensure header is written immediately
+        _plugin_logprintf("[%s] New CSV file created: %s\n", PLUGIN_NAME, csvFilePath.c_str());
+    }
+    else
+    {
+        _plugin_logprintf("[%s] Existing CSV file opened: %s\n", PLUGIN_NAME, csvFilePath.c_str());
+    }
+
+    csvFileOpen = true;
+    return true;
+}
+
+// Close CSV file and increment session ID
+static bool closeCSVFile()
+{
+    if (!csvFileOpen)
+    {
+        _plugin_logprintf("[%s] No CSV file open\n", PLUGIN_NAME);
+        return false;
+    }
+
+    csvFile.close();
+    csvFileOpen = false;
+    currentSessionId++;
+    
+    _plugin_logprintf("[%s] CSV file closed. Next session ID: %d\n", PLUGIN_NAME, currentSessionId);
+    _plugin_logprintf("[%s] All future entries will use ID %d\n", PLUGIN_NAME, currentSessionId);
+    return true;
+}
+
 // Simple test command
 static bool cb_test(int argc, char* argv[])
 {
     _plugin_logprintf("[%s] Test command executed successfully!\n", PLUGIN_NAME);
+    return true;
+}
+
+// Command to create CSV file
+static bool cb_create_csv(int argc, char* argv[])
+{
+    if (createCSVFile())
+    {
+        _plugin_logprintf("[%s] CSV file created successfully\n", PLUGIN_NAME);
+        return true;
+    }
+    else
+    {
+        _plugin_logprintf("[%s] Failed to create CSV file\n", PLUGIN_NAME);
+        return false;
+    }
+}
+
+// Command to close CSV file
+static bool cb_close_csv(int argc, char* argv[])
+{
+    if (closeCSVFile())
+    {
+        _plugin_logprintf("[%s] CSV file closed successfully\n", PLUGIN_NAME);
+        return true;
+    }
+    else
+    {
+        _plugin_logprintf("[%s] Failed to close CSV file\n", PLUGIN_NAME);
+        return false;
+    }
+}
+
+// Get timestamp as string for scripts
+static std::string getTimestampString()
+{
+    FILETIME ftUtc;
+    GetSystemTimePreciseAsFileTime(&ftUtc);
+    FILETIME ftLocal;
+    FileTimeToLocalFileTime(&ftUtc, &ftLocal);
+    SYSTEMTIME st;
+    FileTimeToSystemTime(&ftLocal, &st);
+
+    ULARGE_INTEGER uli;
+    uli.LowPart = ftLocal.dwLowDateTime;
+    uli.HighPart = ftLocal.dwHighDateTime;
+    unsigned long long ticks100ns = uli.QuadPart;
+    unsigned long long microseconds = (ticks100ns % 10000000ULL) / 10ULL;
+    unsigned int ms = (unsigned int)(microseconds / 1000);
+    unsigned int us = (unsigned int)(microseconds % 1000);
+
+    char timestamp[80];
+    sprintf_s(timestamp, sizeof(timestamp), "%04d-%02d-%02d %02d:%02d:%02d.%03d%03d",
+              st.wYear, st.wMonth, st.wDay,
+              st.wHour, st.wMinute, st.wSecond, ms, us);
+
+    return std::string(timestamp);
+}
+
+// Get timestamp as microseconds since epoch for scripts
+static unsigned long long getTimestampMicros()
+{
+    FILETIME ftUtc;
+    GetSystemTimePreciseAsFileTime(&ftUtc);
+    
+    ULARGE_INTEGER uli;
+    uli.LowPart = ftUtc.dwLowDateTime;
+    uli.HighPart = ftUtc.dwHighDateTime;
+    
+    // Convert from 100ns ticks since 1601 to microseconds since 1970 (Unix epoch)
+    // 1601 to 1970 is 11644473600 seconds = 116444736000000000 * 100ns ticks
+    const unsigned long long EPOCH_DIFF = 116444736000000000ULL;
+    unsigned long long ticks100ns = uli.QuadPart - EPOCH_DIFF;
+    unsigned long long microseconds = ticks100ns / 10ULL;
+    
+    return microseconds;
+}
+
+// Command to get timestamp string for scripts
+static bool cb_get_timestamp(int argc, char* argv[])
+{
+    std::string timestamp = getTimestampString();
+    
+    // For string values, we need to use a different approach
+    // We'll store it as a comment or use log output that scripts can parse
+    _plugin_logprintf("[%s] TIMESTAMP_RESULT: %s\n", PLUGIN_NAME, timestamp.c_str());
+    
+    return true;
+}
+
+// Command to get timestamp as microseconds for scripts
+static bool cb_get_timestamp_micros(int argc, char* argv[])
+{
+    unsigned long long micros = getTimestampMicros();
+    
+    // Set the result variable that scripts can access (numeric value works)
+    DbgValToString("$result", (duint)micros);
+    
+    _plugin_logprintf("[%s] Timestamp (microseconds): %llu (stored in $result)\n", PLUGIN_NAME, micros);
+    return true;
+}
+
+// Command to write a test entry to CSV
+static bool cb_write_test(int argc, char* argv[])
+{
+    if (!csvFileOpen)
+    {
+        _plugin_logprintf("[%s] CSV file not open. Use 'createcsv' first\n", PLUGIN_NAME);
+        return false;
+    }
+
+    // Get current timestamp
+    FILETIME ftUtc;
+    GetSystemTimePreciseAsFileTime(&ftUtc);
+    FILETIME ftLocal;
+    FileTimeToLocalFileTime(&ftUtc, &ftLocal);
+    SYSTEMTIME st;
+    FileTimeToSystemTime(&ftLocal, &st);
+
+    ULARGE_INTEGER uli;
+    uli.LowPart = ftLocal.dwLowDateTime;
+    uli.HighPart = ftLocal.dwHighDateTime;
+    unsigned long long ticks100ns = uli.QuadPart;
+    unsigned long long microseconds = (ticks100ns % 10000000ULL) / 10ULL;
+    unsigned int ms = (unsigned int)(microseconds / 1000);
+    unsigned int us = (unsigned int)(microseconds % 1000);
+
+    char timestamp[80];
+    sprintf_s(timestamp, sizeof(timestamp), "%04d-%02d-%02d %02d:%02d:%02d.%03d%03d",
+              st.wYear, st.wMonth, st.wDay,
+              st.wHour, st.wMinute, st.wSecond, ms, us);
+
+    // Write test entry with current session ID
+    csvFile << currentSessionId << "," << timestamp << ",test_entry,sample_secret\n";
+    csvFile.flush();
+
+    _plugin_logprintf("[%s] Test entry written to CSV with ID %d\n", PLUGIN_NAME, currentSessionId);
+    return true;
+}
+
+// Convert hex string to readable format
+static std::string formatHexString(const std::string& hexStr)
+{
+    std::string result;
+    for (size_t i = 0; i < hexStr.length(); i += 2)
+    {
+        if (i + 1 < hexStr.length())
+        {
+            if (i > 0) result += " ";
+            result += hexStr.substr(i, 2);
+        }
+    }
+    return result;
+}
+
+// Logging API: log timestamp, label, and byte string to CSV
+// Usage: logentry label,hex_bytes[,custom_timestamp]
+static bool cb_log_entry(int argc, char* argv[])
+{
+    if (!csvFileOpen)
+    {
+        _plugin_logprintf("[%s] CSV file not open. Use 'createcsv' first\n", PLUGIN_NAME);
+        return false;
+    }
+
+    if (argc < 3)
+    {
+        _plugin_logprintf("[%s] Usage: logentry label,hex_bytes[,custom_timestamp]\n", PLUGIN_NAME);
+        _plugin_logprintf("[%s] Example: logentry start_function,48894C2408\n", PLUGIN_NAME);
+        return false;
+    }
+
+    std::string label = argv[1] ? argv[1] : "unknown";
+    std::string hexBytes = argv[2] ? argv[2] : "";
+    std::string timestamp;
+
+    // Use custom timestamp if provided, otherwise get current timestamp
+    if (argc >= 4 && argv[3] && strlen(argv[3]) > 0)
+    {
+        timestamp = argv[3];
+    }
+    else
+    {
+        timestamp = getTimestampString();
+    }
+
+    // Format hex bytes for better readability
+    std::string formattedHex = formatHexString(hexBytes);
+
+    // Write entry to CSV with proper escaping for commas
+    csvFile << currentSessionId << ",\"" << timestamp << "\",\"" << label << "\",\"" << formattedHex << "\"\n";
+    csvFile.flush();
+
+    _plugin_logprintf("[%s] Entry logged: ID=%d, Label=\"%s\", Bytes=\"%s\"\n", 
+                     PLUGIN_NAME, currentSessionId, label.c_str(), formattedHex.c_str());
+    return true;
+}
+
+// Command to get current session ID
+static bool cb_get_session_id(int argc, char* argv[])
+{
+    DbgValToString("$result", (duint)currentSessionId);
+    _plugin_logprintf("[%s] Current session ID: %d (stored in $result)\n", PLUGIN_NAME, currentSessionId);
+    return true;
+}
+
+// Command to get CSV file status
+static bool cb_csv_status(int argc, char* argv[])
+{
+    if (csvFileOpen)
+    {
+        _plugin_logprintf("[%s] CSV Status: OPEN\n", PLUGIN_NAME);
+        _plugin_logprintf("[%s] File: %s\n", PLUGIN_NAME, csvFilePath.c_str());
+        _plugin_logprintf("[%s] Session ID: %d\n", PLUGIN_NAME, currentSessionId);
+    }
+    else
+    {
+        _plugin_logprintf("[%s] CSV Status: CLOSED\n", PLUGIN_NAME);
+        _plugin_logprintf("[%s] Next session ID: %d\n", PLUGIN_NAME, currentSessionId);
+    }
     return true;
 }
 
@@ -82,17 +386,45 @@ bool pluginInit(PLUG_INITSTRUCT* initStruct)
     // Register commands
     _plugin_registercommand(pluginHandle, "testcmd", cb_test, false);
     _plugin_registercommand(pluginHandle, "timestamp", cb_timestamp, false);
+    _plugin_registercommand(pluginHandle, "createcsv", cb_create_csv, false);
+    _plugin_registercommand(pluginHandle, "closecsv", cb_close_csv, false);
+    _plugin_registercommand(pluginHandle, "writetest", cb_write_test, false);
+    
+    // API commands for scripts
+    _plugin_registercommand(pluginHandle, "gettimestamp", cb_get_timestamp, false);
+    _plugin_registercommand(pluginHandle, "gettimemicros", cb_get_timestamp_micros, false);
+    _plugin_registercommand(pluginHandle, "logentry", cb_log_entry, false);
+    _plugin_registercommand(pluginHandle, "getsessionid", cb_get_session_id, false);
+    _plugin_registercommand(pluginHandle, "csvstatus", cb_csv_status, false);
+    
+    // Automatically create CSV file on initialization
+    createCSVFile();
     
     _plugin_logprintf("[%s] Plugin initialized\n", PLUGIN_NAME);
     _plugin_logprintf("[%s] Available commands:\n", PLUGIN_NAME);
     _plugin_logprintf("[%s]   testcmd - Test the plugin\n", PLUGIN_NAME);
     _plugin_logprintf("[%s]   timestamp [label] - Log current timestamp with microsecond precision\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   createcsv - Create/open CSV file\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   closecsv - Close CSV file and increment session ID\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   writetest - Write a test entry to CSV\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s] API for scripts:\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   gettimestamp - Get timestamp string in log\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   gettimemicros - Get timestamp as microseconds in $result\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   logentry label,hex_bytes[,timestamp] - Log entry to CSV\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   getsessionid - Get current session ID in $result\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   csvstatus - Show CSV file status\n", PLUGIN_NAME);
     return true;
 }
 
 // Plugin cleanup
 bool pluginStop()
 {
+    // Close CSV file if open
+    if (csvFileOpen)
+    {
+        closeCSVFile();
+    }
+    
     _plugin_logprintf("[%s] Plugin stopped\n", PLUGIN_NAME);
     return true;
 }
