@@ -1,6 +1,6 @@
 # 📊 LogToCSV Plugin
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSL-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 [![x64dbg](https://img.shields.io/badge/x64dbg-plugin-green.svg)]()
 
