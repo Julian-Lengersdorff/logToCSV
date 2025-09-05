@@ -324,6 +324,117 @@ static bool cb_csv_status(int argc, char* argv[])
     return true;
 }
 
+// Log memory using x64dbg variables
+// Usage: logmemvars label_var,address_var,size_var[,timestamp_var]
+static bool cb_logmem_vars(int argc, char* argv[])
+{
+    if (!csvFileOpen)
+    {
+        _plugin_logprintf("[%s] CSV file not open. Use 'createcsv' first\n", PLUGIN_NAME);
+        return true;
+    }
+
+    if (argc < 4)
+    {
+        _plugin_logprintf("[%s] Usage: logmemvars label_var,address_var,size_var[,timestamp_var]\n", PLUGIN_NAME);
+        _plugin_logprintf("[%s] Example: logmemvars saved_secret_kind,secret_ptr,secret_size,time_stamp\n", PLUGIN_NAME);
+        return true;
+    }
+
+    // Evaluate variables using x64dbg's expression evaluator
+    duint labelAddr = DbgEval(argv[1]);
+    duint addressVar = DbgEval(argv[2]);
+    duint sizeVar = DbgEval(argv[3]);
+    duint timestampVar = 0;
+    
+    if (argc >= 5)
+    {
+        timestampVar = DbgEval(argv[4]);
+    }
+
+    _plugin_logprintf("[%s] Evaluated: label_addr=%p, address=%p, size=%zu, timestamp=%llu\n", 
+                     PLUGIN_NAME, (void*)labelAddr, (void*)addressVar, sizeVar, timestampVar);
+
+    // Read label string from memory (labelAddr should point to a string)
+    char labelBuffer[256] = "unknown_label";
+    if (labelAddr != 0)
+    {
+        if (!DbgMemRead(labelAddr, labelBuffer, sizeof(labelBuffer) - 1))
+        {
+            strcpy_s(labelBuffer, "read_error");
+        }
+        labelBuffer[sizeof(labelBuffer) - 1] = '\0';
+    }
+
+    // Validate size (reasonable limit)
+    if (sizeVar == 0)
+    {
+        _plugin_logprintf("[%s] Size is zero\n", PLUGIN_NAME);
+        return true;
+    }
+    
+    if (sizeVar > 4096)
+    {
+        _plugin_logprintf("[%s] Size too large (max 4096 bytes): %zu\n", PLUGIN_NAME, sizeVar);
+        return true;
+    }
+
+    // Read memory from the debugged process
+    unsigned char* buffer = new unsigned char[sizeVar];
+    if (!DbgMemRead(addressVar, buffer, sizeVar))
+    {
+        _plugin_logprintf("[%s] Failed to read memory at address %p\n", PLUGIN_NAME, (void*)addressVar);
+        delete[] buffer;
+        return true;
+    }
+
+    // Convert to hex string
+    std::string hexData;
+    for (size_t i = 0; i < sizeVar; i++)
+    {
+        char hexByte[4];
+        sprintf_s(hexByte, "%02X", buffer[i]);
+        if (i > 0) hexData += " ";
+        hexData += hexByte;
+    }
+
+    // Get timestamp
+    std::string timeStr;
+    if (timestampVar > 0)
+    {
+        // Convert microseconds to formatted timestamp
+        time_t seconds = timestampVar / 1000000;
+        uint64_t microseconds = timestampVar % 1000000;
+        
+        struct tm timeinfo;
+        localtime_s(&timeinfo, &seconds);
+        
+        char timeBuffer[64];
+        sprintf_s(timeBuffer, "%04d-%02d-%02d %02d:%02d:%02d.%06llu",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, microseconds);
+        timeStr = timeBuffer;
+    }
+    else
+    {
+        timeStr = getTimestampString();
+    }
+
+    // Write to CSV with proper escaping
+    csvFile << currentSessionId << ","
+           << "\"" << timeStr << "\","
+           << "\"" << labelBuffer << "\","
+           << "\"" << hexData << "\"" << std::endl;
+
+    csvFile.flush();
+
+    _plugin_logprintf("[%s] Memory logged from variables: ID=%d, Label=\"%s\", Address=%p, Size=%zu bytes\n", 
+                     PLUGIN_NAME, currentSessionId, labelBuffer, (void*)addressVar, sizeVar);
+
+    delete[] buffer;
+    return true;
+}
+
 // Simple timestamp command
 static bool cb_timestamp(int argc, char* argv[])
 {
@@ -394,6 +505,7 @@ bool pluginInit(PLUG_INITSTRUCT* initStruct)
     _plugin_registercommand(pluginHandle, "gettimestamp", cb_get_timestamp, false);
     _plugin_registercommand(pluginHandle, "gettimemicros", cb_get_timestamp_micros, false);
     _plugin_registercommand(pluginHandle, "logentry", cb_log_entry, false);
+    _plugin_registercommand(pluginHandle, "logmemvars", cb_logmem_vars, false);
     _plugin_registercommand(pluginHandle, "getsessionid", cb_get_session_id, false);
     _plugin_registercommand(pluginHandle, "csvstatus", cb_csv_status, false);
     
@@ -411,6 +523,7 @@ bool pluginInit(PLUG_INITSTRUCT* initStruct)
     _plugin_logprintf("[%s]   gettimestamp - Get timestamp string in log\n", PLUGIN_NAME);
     _plugin_logprintf("[%s]   gettimemicros - Get timestamp as microseconds in $result\n", PLUGIN_NAME);
     _plugin_logprintf("[%s]   logentry label,hex_bytes[,timestamp] - Log entry to CSV\n", PLUGIN_NAME);
+    _plugin_logprintf("[%s]   logmemvars label_var,addr_var,size_var[,time_var] - Log memory using variables\n", PLUGIN_NAME);
     _plugin_logprintf("[%s]   getsessionid - Get current session ID in $result\n", PLUGIN_NAME);
     _plugin_logprintf("[%s]   csvstatus - Show CSV file status\n", PLUGIN_NAME);
     return true;

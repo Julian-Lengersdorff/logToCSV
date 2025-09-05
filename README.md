@@ -17,6 +17,7 @@
 | 🔧 **Script API** | Full integration with x64dbg scripts for automated logging |
 | 🗂️ **Session Management** | Automatic ID tracking across debugging sessions |
 | 🔢 **Hex Formatting** | Automatic formatting of binary data for readability |
+| 🧠 **Variable Support** | Direct evaluation of x64dbg variables and expressions |
 
 
 ## 🚀 Installation
@@ -77,9 +78,11 @@ ID,timestamp,label,secret
 | `gettimemicros` | ⏱️ Get microseconds since epoch | `$result` | `gettimemicros` |
 | `getsessionid` | 🔢 Get current session ID | `$result` | `getsessionid` |
 | `logentry` | 📝 Log entry to CSV | Success/failure | `logentry start_func,48894C2408` |
+| `logmemvars` | 🧠 Log memory using variables | Success/failure | `logmemvars label_addr,data_addr,size,timestamp` |
 
-### 📋 Logging API
+### 📋 Logging APIs
 
+#### Basic Logging API
 **Syntax:** `logentry label,hex_bytes[,custom_timestamp]`
 
 **Examples:**
@@ -89,16 +92,58 @@ logentry breakpoint_hit,CAFEBABE
 logentry custom_event,DEADBEEF,2025-01-01 12:00:00.000000
 ```
 
+#### 🆕 Advanced Memory Logging API
+**Syntax:** `logmemvars label_var,address_var,size_var[,timestamp_var]`
+
+> **💡 Recommended for scripts:** This command properly evaluates x64dbg variables and expressions, solving common parsing issues with the basic `logentry` command.
+
+**Examples:**
+```bash
+# Log memory using variables
+logmemvars saved_secret_kind,secret_ptr,secret_size,time_stamp
+
+# Log with expressions
+logmemvars rip,rsp,10,time_variable
+
+# Log without custom timestamp (uses current time)
+logmemvars my_label,data_address,data_size
+```
+
+**Advantages over `logentry`:**
+- ✅ Properly evaluates x64dbg variables and expressions
+- ✅ Reads memory directly from debugged process
+- ✅ Handles complex expressions like `{mem;size@addr}`
+- ✅ Automatic hex formatting with proper spacing
+- ✅ No string parsing limitations
+
 ## 💻 Usage in x64dbg Scripts
 
 ### 📊 Basic Logging
 ```javascript
-// Log function entry
+// Log function entry with basic command
 logentry function_entry,{hex:eip,8}
 
 // Get timestamp for calculations
 gettimemicros
 mov eax, $result
+```
+
+### 🧠 Advanced Memory Logging
+```javascript
+// Store data locations in variables
+label_addr = saved_secret_kind    // Pointer to label string
+data_addr = secret_ptr           // Pointer to actual data
+data_size = secret_size          // Size of data to read
+
+// Get precise timestamp
+gettimemicros
+timestamp_var = $result
+
+// Log using variables (recommended approach)
+logmemvars label_addr,data_addr,data_size,timestamp_var
+
+// Alternative: Log without custom timestamp
+logmemvars label_addr,data_addr,data_size
 ```
 
 ### ⚡ Performance Measurement
@@ -127,6 +172,46 @@ closecsv
 createcsv
 ```
 
+### 🔄 Migration from `logentry` to `logmemvars`
+
+**Old problematic approach:**
+```javascript
+// ❌ This often fails due to expression parsing issues
+logentry saved_secret_kind, "{mem;secret_size@secret_ptr}", time_stamp
+```
+
+**New recommended approach:**
+```javascript
+// ✅ This works reliably with proper variable evaluation
+logmemvars saved_secret_kind,secret_ptr,secret_size,time_stamp
+```
+
+### 🚀 Quick Start Example
+
+Here's a complete example showing how to use the new `logmemvars` feature:
+
+```javascript
+// 1. Ensure CSV is open
+createcsv
+
+// 2. Set up your data
+my_label = "ssl_secret"      // Label for this entry
+data_ptr = 0x401000         // Address of data to log
+data_size = 32              // Size in bytes
+
+// 3. Get precise timestamp
+gettimemicros
+my_time = $result
+
+// 4. Log the memory content
+logmemvars my_label,data_ptr,data_size,my_time
+
+// 5. Check the results
+csvstatus
+```
+
+This will create an entry in `%TEMP%\timing_13.csv` with properly formatted hex data and microsecond-precision timestamps.
+
 ## 📁 File Management
 
 | Feature | Description |
@@ -147,6 +232,13 @@ createcsv
 - All string operations use safe functions (`sprintf_s`, `strcpy_s`)
 - Null pointer checks on all arguments
 - Exception handling for file operations
+- Memory bounds checking for variable-size data reads
+
+### 🧠 Variable Expression Handling
+- Uses x64dbg's `DbgEval()` for proper variable evaluation
+- Supports complex expressions and memory references
+- Direct memory reading from debugged process using `DbgMemRead()`
+- Automatic conversion of binary data to readable hex format
 
 ### 📊 CSV Format Compliance
 - Proper escaping of fields containing commas
