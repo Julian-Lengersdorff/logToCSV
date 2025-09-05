@@ -18,6 +18,7 @@
 | 🗂️ **Session Management** | Automatic ID tracking across debugging sessions |
 | 🔢 **Hex Formatting** | Automatic formatting of binary data for readability |
 
+
 ## 🚀 Installation
 
 ### Quick Start
